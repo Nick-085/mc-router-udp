@@ -24,4 +24,5 @@ services:
       - "25565:25565"
       # bind the API port to only loopback to avoid external exposure
       - "127.0.0.1:25564:25564"
+      - "19132:19132/udp"
 

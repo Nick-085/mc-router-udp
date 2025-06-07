@@ -77,6 +77,8 @@ type Config struct {
 	SimplifySRV bool `default:"false" usage:"Simplify fully qualified SRV records for mapping"`
 
 	Webhook WebhookConfig `usage:"Webhook configuration"`
+
+	BedrockPort int `default:"19132" usage:"The [port] bound to listen for Minecraft Bedrock (UDP) client connections"`
 }
 
 var (
@@ -250,6 +252,15 @@ func main() {
 	if err != nil {
 		logrus.WithError(err).Fatal("Unable to start metrics reporter")
 	}
+
+	// Start UDP listener for Bedrock
+	go func() {
+		addr := net.JoinHostPort("", strconv.Itoa(config.BedrockPort))
+		err := server.StartBedrockUDPProxy(ctx, addr)
+		if err != nil {
+			logrus.WithError(err).Error("Failed to start Bedrock UDP proxy")
+		}
+	}()
 
 	// handle signals
 	for {

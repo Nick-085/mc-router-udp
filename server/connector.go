@@ -617,7 +617,7 @@ func (c *Connector) pumpConnections(ctx context.Context, frontendConn, backendCo
 			logrus.WithError(err).
 				WithField("client", clientAddr).
 				Error("Error observed on connection relay")
-			c.metrics.Errors.With("type", "relay").Add(1)
+		 c.metrics.Errors.With("type", "relay").Add(1)
 		}
 
 	case <-ctx.Done():
@@ -646,4 +646,84 @@ func (c *Connector) pumpFrames(incoming io.Reader, outgoing io.Writer, errors ch
 
 func (c *Connector) UseNgrok(token string) {
 	c.ngrokToken = token
+}
+
+// StartBedrockUDPProxy starts a UDP proxy for Minecraft Bedrock Edition.
+// It listens on the given address and forwards packets to the appropriate backend.
+func StartBedrockUDPProxy(ctx context.Context, listenAddr string) error {
+	pc, err := net.ListenPacket("udp", listenAddr)
+	if err != nil {
+		return err
+	}
+	logrus.WithField("listenAddr", listenAddr).Info("Listening for Minecraft Bedrock (UDP) client connections")
+
+	buf := make([]byte, 4096)
+	type clientKey struct {
+		addr string
+	}
+	// Map client to backend connection
+	clientBackends := make(map[clientKey]*net.UDPConn)
+	var mu sync.Mutex
+
+	go func() {
+		<-ctx.Done()
+		pc.Close()
+	}()
+
+	for {
+		n, clientAddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			logrus.WithError(err).Warn("Error reading UDP packet")
+			continue
+		}
+		data := make([]byte, n)
+		copy(data, buf[:n])
+
+		go func(clientAddr net.Addr, data []byte) {
+			// For Bedrock, the server address is not in the UDP packet, so we must use a default route.
+			backendHostPort, _, _, _ := Routes.FindBackendForServerAddress(ctx, "")
+			if backendHostPort == "" {
+				logrus.WithField("client", clientAddr).Warn("No backend found for Bedrock UDP")
+				return
+			}
+			backendUDPAddr, err := net.ResolveUDPAddr("udp", backendHostPort)
+			if err != nil {
+				logrus.WithError(err).WithField("backend", backendHostPort).Warn("Failed to resolve backend UDP address")
+				return
+			}
+			mu.Lock()
+			key := clientKey{addr: clientAddr.String()}
+			backendConn, ok := clientBackends[key]
+			if !ok {
+				backendConn, err = net.DialUDP("udp", nil, backendUDPAddr)
+				if err != nil {
+					mu.Unlock()
+					logrus.WithError(err).Warn("Failed to dial backend UDP")
+					return
+				}
+				clientBackends[key] = backendConn
+			}
+			mu.Unlock()
+
+			// Forward client -> backend
+			_, err = backendConn.Write(data)
+			if err != nil {
+				logrus.WithError(err).Warn("Failed to write to backend UDP")
+			}
+
+			// Read response from backend and send back to client
+			backendConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			resp := make([]byte, 4096)
+			n, _, err := backendConn.ReadFrom(resp)
+			if err == nil && n > 0 {
+				_, err = pc.WriteTo(resp[:n], clientAddr)
+				if err != nil {
+					logrus.WithError(err).Warn("Failed to write UDP response to client")
+				}
+			}
+		}(clientAddr, data)
+	}
 }

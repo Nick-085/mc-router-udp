@@ -107,6 +107,7 @@ type IRoutes interface {
 	// Otherwise, an empty string is returned. Also returns the normalized version of the given serverAddress.
 	// The 3rd value returned is an (optional) "waker" function which a caller must invoke to wake up serverAddress.
 	// The 4th value returned is an (optional) "sleeper" function which a caller must invoke to shut down serverAddress.
+	// For Bedrock UDP, the default route is used since the server address is not available in the packet.
 	FindBackendForServerAddress(ctx context.Context, serverAddress string) (string, string, ScalerFunc, ScalerFunc)
 	GetMappings() map[string]string
 	DeleteMapping(serverAddress string) bool
